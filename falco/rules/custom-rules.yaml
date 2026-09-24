@@ -1,0 +1,45 @@
+# Custom Falco Rules: Hardened for TRC-20 Fintech Gateway
+# Scope: Interactive Shell Spawn, Secret Access, Unauthorized Egress
+
+- macro: fintech_gateway_pod
+  condition: (k8s.ns.name = "fintech-gateway" and k8s.pod.label.app = "trc20-gateway")
+
+- macro: legitimate_gateway_binaries
+  condition: (proc.name in ("gateway", "vault-agent"))
+
+# 1. Gateway içinde yetkisiz interaktif shell
+- rule: Unauthorized Shell Spawn in TRC20 Gateway
+  desc: Detect interactive shell spawned inside TRC-20 fintech gateway container
+  condition: >
+    spawned_process and
+    fintech_gateway_pod and
+    proc.name in ("sh", "bash", "zsh", "ash", "dash")
+  output: >
+    CRITICAL Shell spawned in gateway (user=%user.name pod=%k8s.pod.name ns=%k8s.ns.name cmd=%proc.cmdline)
+  priority: CRITICAL
+  tags: [mitre_execution, fintech_gateway, quarantine_target]
+
+# 2. Vault Secret dosyasına yetkisiz process erişimi
+- rule: Unauthorized Read of Injected Vault Secret
+  desc: Detect non-gateway process attempting to read dynamic webhook secret
+  condition: >
+    open_read and
+    fintech_gateway_pod and
+    fd.name = "/vault/secrets/webhook-secret" and
+    not legitimate_gateway_binaries
+  output: >
+    CRITICAL Unauthorized process reading secret file (proc=%proc.name user=%user.name pod=%k8s.pod.name file=%fd.name)
+  priority: CRITICAL
+  tags: [mitre_credential_access, fintech_gateway, quarantine_target]
+
+# 3. Whitelist dışı outbound trafik (C2 / Exfiltration)
+- rule: Outbound Network Connection to Non-Whitelisted Endpoint
+  desc: Detect outbound connections outside cluster and authorized RPC endpoints
+  condition: >
+    outbound and
+    fintech_gateway_pod and
+    not (fd.sip in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1"))
+  output: >
+    WARNING Outbound connection detected from gateway to unknown external IP (pod=%k8s.pod.name dest=%fd.rip:%fd.rport)
+  priority: WARNING
+  tags: [mitre_exfiltration, fintech_gateway]
