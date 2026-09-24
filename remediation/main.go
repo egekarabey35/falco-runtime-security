@@ -20,6 +20,13 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+const (
+	maxConcurrentQuarantines = 10
+	quarantineLabelKey       = "security.quarantine"
+	quarantineLabelValue     = "true"
+	targetNamespace          = "fintech-gateway"
+)
+
 type FalcoEvent struct {
 	Output       string                 `json:"output"`
 	Priority     string                 `json:"priority"`
@@ -30,9 +37,15 @@ type FalcoEvent struct {
 type RemediationEngine struct {
 	k8sClient kubernetes.Interface
 	authToken string
+	semaphore chan struct{}
 }
 
 func NewRemediationEngine(token string) (*RemediationEngine, error) {
+	// FAIL-CLOSED: Token bos ise motor kesinlikle baslatilamaz!
+	if token == "" {
+		return nil, fmt.Errorf("FAIL-CLOSED: FALCO_WEBHOOK_SECRET bos olamaz, worker guvensiz baslatilamaz")
+	}
+
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("in-cluster k8s config alinamadi: %w", err)
@@ -46,6 +59,7 @@ func NewRemediationEngine(token string) (*RemediationEngine, error) {
 	return &RemediationEngine{
 		k8sClient: clientset,
 		authToken: token,
+		semaphore: make(chan struct{}, maxConcurrentQuarantines),
 	}, nil
 }
 
@@ -55,15 +69,12 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 1. Webhook Auth (Shared-Secret / Timing Attack Safe)
-	// Cluster içi yetkisiz pod'ların sahte alert atıp DoS yaratmasını engeller
+	// 1. FAIL-CLOSED Webhook Auth: Header yoksa veya gecersizse aninda 401
 	receivedToken := r.Header.Get("X-Falco-Token")
-	if re.authToken != "" {
-		if subtle.ConstantTimeCompare([]byte(re.authToken), []byte(receivedToken)) != 1 {
-			log.Printf("[SECURITY WARN] Gecersiz webhook token ile istek reddedildi! IP: %s", r.RemoteAddr)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
+	if subtle.ConstantTimeCompare([]byte(re.authToken), []byte(receivedToken)) != 1 {
+		log.Printf("[SECURITY VIOLATION] Gecersiz webhook auth token ile istek reddedildi! Kaynak IP: %s", r.RemoteAddr)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
 	}
 
 	body, err := io.ReadAll(r.Body)
@@ -81,14 +92,13 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 
 	log.Printf("[FALCO EVENT] Rule: %s | Priority: %s", event.Rule, event.Priority)
 
-	// Sadece CRITICAL veya Emergency seviyesinde ve fintech-gateway namespace'ine kısıtlı aksiyon
 	if event.Priority == "CRITICAL" || event.Priority == "Emergency" {
 		podName, _ := event.OutputFields["k8s.pod.name"].(string)
 		namespace, _ := event.OutputFields["k8s.ns.name"].(string)
 
-		// Scope sınırlandırması: Worker sadece fintech-gateway namespace'ine müdahale edebilir
-		if namespace == "fintech-gateway" && podName != "" {
-			go re.quarantinePod(namespace, podName, event.Rule)
+		// Scope Guard: Sadece fintech-gateway hedeflenebilir
+		if namespace == targetNamespace && podName != "" {
+			go re.quarantinePodWithThrottling(namespace, podName, event.Rule)
 		}
 	}
 
@@ -96,32 +106,38 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 	w.Write([]byte(`{"status":"received"}`))
 }
 
-// Pod'u silmeden NetworkPolicy ile izole etmek için patch uygular
+// Semaphore ile K8s API'ye goroutine patlamasini engeller (Throttling)
+func (re *RemediationEngine) quarantinePodWithThrottling(namespace, podName, triggerRule string) {
+	re.semaphore <- struct{}{}
+	defer func() { <-re.semaphore }()
+
+	re.quarantinePod(namespace, podName, triggerRule)
+}
+
 func (re *RemediationEngine) quarantinePod(namespace, podName, triggerRule string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// 2. Idempotency Check: Pod zaten karantinada mı? Peş peşe gelen alert'lerde gereksiz patch ve conflict önlenir.
+	// Idempotency: Zaten karantinada mi?
 	pod, err := re.k8sClient.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Printf("[WARN] Pod bulunamadi, muhtemelen sonlandi: %s/%s", namespace, podName)
+			log.Printf("[INFO] Pod zaten sonlanmis, islem atlandi: %s/%s", namespace, podName)
 			return
 		}
-		log.Printf("[ERROR] Pod bilgisi alinamadi (%s/%s): %v", namespace, podName, err)
+		re.escalateFailure(namespace, podName, triggerRule, fmt.Sprintf("Pod bilgisi alinamadi: %v", err))
 		return
 	}
 
-	if pod.Labels["security.quarantine"] == "true" {
-		log.Printf("[IDEMPOTENT] Pod zaten karantinada, islem atlandi: %s/%s", namespace, podName)
+	if pod.Labels[quarantineLabelKey] == quarantineLabelValue {
+		log.Printf("[IDEMPOTENT] Pod zaten karantinada: %s/%s", namespace, podName)
 		return
 	}
 
-	log.Printf("[QUARANTINE ACTION] Pod karantinaya aliniyor: %s/%s (Kural: %s)", namespace, podName, triggerRule)
+	log.Printf("[QUARANTINE ACTION] Pod izole ediliyor: %s/%s (Kural: %s)", namespace, podName, triggerRule)
 
-	patchData := []byte(`{"metadata":{"labels":{"security.quarantine":"true"}}}`)
+	patchData := []byte(fmt.Sprintf(`{"metadata":{"labels":{"%s":"%s"}}}`, quarantineLabelKey, quarantineLabelValue))
 
-	// 3. StrategicMergePatch ile etiket basımı (Conflict ve race safe)
 	_, err = re.k8sClient.CoreV1().Pods(namespace).Patch(
 		ctx,
 		podName,
@@ -132,14 +148,26 @@ func (re *RemediationEngine) quarantinePod(namespace, podName, triggerRule strin
 
 	if err != nil {
 		if apierrors.IsConflict(err) {
-			log.Printf("[WARN] Patch conflict olustu, baska bir operasyonla cakisildi (%s/%s)", namespace, podName)
+			log.Printf("[WARN] Patch conflict olustu, yeniden denenmedi (idempotent merge): %s/%s", namespace, podName)
 			return
 		}
-		log.Printf("[ERROR] Pod karantinaya alinamadi (%s/%s): %v", namespace, podName, err)
+		// 2. ESSIZ BASARISIZLIK ESKALASYONU:
+		// Savunma hatti kirildiginda sessiz kalinamaz! SOC/SRE ekibine eskalasyon uretilir.
+		re.escalateFailure(namespace, podName, triggerRule, fmt.Sprintf("K8s API Patch basarisiz: %v", err))
 		return
 	}
 
-	log.Printf("[SUCCESS] Pod izole edildi: %s/%s (Deny-All NetworkPolicy devrede)", namespace, podName)
+	log.Printf("[SUCCESS] Pod basariyla izole edildi (Deny-All devrede): %s/%s", namespace, podName)
+}
+
+// Otonom mudahale basarisiz olursa manuel mudahale icin acil eskalasyon alarmi uretir
+func (re *RemediationEngine) escalateFailure(namespace, podName, rule, reason string) {
+	log.Printf("=====================================================================")
+	log.Printf("[CRITICAL ESCALATION] OTOMATIK KARANTINA BASARISIZ OLDU!")
+	log.Printf("HEDEF: %s/%s | TETIKLEYEN KURAL: %s", namespace, podName, rule)
+	log.Printf("NEDEN: %s", reason)
+	log.Printf("AKSIYON GEREKLI: Lutfen pod'u acilen manuel olarak izole edin veya sonlandirin!")
+	log.Printf("=====================================================================")
 }
 
 func main() {
@@ -147,24 +175,17 @@ func main() {
 
 	authToken := os.Getenv("FALCO_WEBHOOK_SECRET")
 	if authToken == "" {
-		log.Println("[WARN] FALCO_WEBHOOK_SECRET tanimli degil, token kontrolu yapilmayacak!")
+		// FAIL-CLOSED: Guvensiz yapilandirma durumunda aninda fatal exit
+		log.Fatalf("[FATAL CONFIG] FALCO_WEBHOOK_SECRET env bulunamadi! Sistem fail-closed modunda kapaniyor.")
 	}
 
 	engine, err := NewRemediationEngine(authToken)
 	if err != nil {
-		log.Printf("[WARN] K8s cluster disinda calisiyor (Mock mod): %v", err)
+		log.Fatalf("[FATAL] Remediation motoru baslatilamadi: %v", err)
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
-		if engine != nil {
-			engine.handleFalcoEvent(w, r)
-		} else {
-			log.Println("[MOCK] Webhook alindi, k8s cluster baglantisi yok.")
-			w.WriteHeader(http.StatusOK)
-		}
-	})
-
+	mux.HandleFunc("/events", engine.handleFalcoEvent)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"healthy"}`))
@@ -181,7 +202,7 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Println("[INFO] Remediation Webhook :8080 portunda dinliyor...")
+		log.Println("[INFO] Remediation Webhook :8080 portunda dinliyor (Fail-Closed Auth AKTIF)...")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[FATAL] Server hatasi: %v", err)
 		}
