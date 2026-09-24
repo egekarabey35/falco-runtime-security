@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -27,9 +29,10 @@ type FalcoEvent struct {
 
 type RemediationEngine struct {
 	k8sClient kubernetes.Interface
+	authToken string
 }
 
-func NewRemediationEngine() (*RemediationEngine, error) {
+func NewRemediationEngine(token string) (*RemediationEngine, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, fmt.Errorf("in-cluster k8s config alinamadi: %w", err)
@@ -40,13 +43,27 @@ func NewRemediationEngine() (*RemediationEngine, error) {
 		return nil, fmt.Errorf("k8s clientset olusturulamadi: %w", err)
 	}
 
-	return &RemediationEngine{k8sClient: clientset}, nil
+	return &RemediationEngine{
+		k8sClient: clientset,
+		authToken: token,
+	}, nil
 }
 
 func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	// 1. Webhook Auth (Shared-Secret / Timing Attack Safe)
+	// Cluster içi yetkisiz pod'ların sahte alert atıp DoS yaratmasını engeller
+	receivedToken := r.Header.Get("X-Falco-Token")
+	if re.authToken != "" {
+		if subtle.ConstantTimeCompare([]byte(re.authToken), []byte(receivedToken)) != 1 {
+			log.Printf("[SECURITY WARN] Gecersiz webhook token ile istek reddedildi! IP: %s", r.RemoteAddr)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	body, err := io.ReadAll(r.Body)
@@ -64,12 +81,13 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 
 	log.Printf("[FALCO EVENT] Rule: %s | Priority: %s", event.Rule, event.Priority)
 
-	// Sadece CRITICAL alarmlarda NetworkPolicy ile izolasyon uygula
+	// Sadece CRITICAL veya Emergency seviyesinde ve fintech-gateway namespace'ine kısıtlı aksiyon
 	if event.Priority == "CRITICAL" || event.Priority == "Emergency" {
 		podName, _ := event.OutputFields["k8s.pod.name"].(string)
 		namespace, _ := event.OutputFields["k8s.ns.name"].(string)
 
-		if podName != "" && namespace != "" {
+		// Scope sınırlandırması: Worker sadece fintech-gateway namespace'ine müdahale edebilir
+		if namespace == "fintech-gateway" && podName != "" {
 			go re.quarantinePod(namespace, podName, event.Rule)
 		}
 	}
@@ -78,16 +96,33 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 	w.Write([]byte(`{"status":"received"}`))
 }
 
-// Pod'u silmeden NetworkPolicy ile izole etmek için patch atar
+// Pod'u silmeden NetworkPolicy ile izole etmek için patch uygular
 func (re *RemediationEngine) quarantinePod(namespace, podName, triggerRule string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// 2. Idempotency Check: Pod zaten karantinada mı? Peş peşe gelen alert'lerde gereksiz patch ve conflict önlenir.
+	pod, err := re.k8sClient.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Printf("[WARN] Pod bulunamadi, muhtemelen sonlandi: %s/%s", namespace, podName)
+			return
+		}
+		log.Printf("[ERROR] Pod bilgisi alinamadi (%s/%s): %v", namespace, podName, err)
+		return
+	}
+
+	if pod.Labels["security.quarantine"] == "true" {
+		log.Printf("[IDEMPOTENT] Pod zaten karantinada, islem atlandi: %s/%s", namespace, podName)
+		return
+	}
 
 	log.Printf("[QUARANTINE ACTION] Pod karantinaya aliniyor: %s/%s (Kural: %s)", namespace, podName, triggerRule)
 
 	patchData := []byte(`{"metadata":{"labels":{"security.quarantine":"true"}}}`)
 
-	_, err := re.k8sClient.CoreV1().Pods(namespace).Patch(
+	// 3. StrategicMergePatch ile etiket basımı (Conflict ve race safe)
+	_, err = re.k8sClient.CoreV1().Pods(namespace).Patch(
 		ctx,
 		podName,
 		types.StrategicMergePatchType,
@@ -96,6 +131,10 @@ func (re *RemediationEngine) quarantinePod(namespace, podName, triggerRule strin
 	)
 
 	if err != nil {
+		if apierrors.IsConflict(err) {
+			log.Printf("[WARN] Patch conflict olustu, baska bir operasyonla cakisildi (%s/%s)", namespace, podName)
+			return
+		}
 		log.Printf("[ERROR] Pod karantinaya alinamadi (%s/%s): %v", namespace, podName, err)
 		return
 	}
@@ -106,7 +145,12 @@ func (re *RemediationEngine) quarantinePod(namespace, podName, triggerRule strin
 func main() {
 	log.Println("[BOOT] Falco Active Remediation Worker baslatiliyor...")
 
-	engine, err := NewRemediationEngine()
+	authToken := os.Getenv("FALCO_WEBHOOK_SECRET")
+	if authToken == "" {
+		log.Println("[WARN] FALCO_WEBHOOK_SECRET tanimli degil, token kontrolu yapilmayacak!")
+	}
+
+	engine, err := NewRemediationEngine(authToken)
 	if err != nil {
 		log.Printf("[WARN] K8s cluster disinda calisiyor (Mock mod): %v", err)
 	}
