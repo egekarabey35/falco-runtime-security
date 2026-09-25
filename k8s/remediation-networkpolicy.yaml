@@ -22,18 +22,9 @@ spec:
         - protocol: TCP
           port: 8080
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
+    # Zero-Trust & Strict Least Privilege:
+    # InClusterConfig() pod enjekte env (KUBERNETES_SERVICE_HOST) uzerinden IP ile baglanir.
+    # DNS (port 53) ve Dis Dunya (0.0.0.0/0) tamamen engellenmistir.
     - to:
         - ipBlock:
             cidr: 10.96.0.1/32

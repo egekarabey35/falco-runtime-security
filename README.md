@@ -33,3 +33,7 @@ An eBPF-driven runtime security and active defense architecture designed for hig
 
 Execute the automated simulation script:
 ./scripts/simulate-attack.sh
+
+### Operational Portability Note
+> **ClusterIP Customization:** The API Server CIDR `10.96.0.1/32` in `remediation-networkpolicy.yaml` reflects standard local/kind environments. In managed environments (EKS/GKE), extract the exact ClusterIP via:
+> `kubectl get svc kubernetes -n default -o jsonpath="{.spec.clusterIP}"` and patch the CIDR accordingly.
