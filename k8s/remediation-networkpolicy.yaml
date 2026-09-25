@@ -1,0 +1,42 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: falco-remediation-netpol
+  namespace: security-monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app: falco-remediation
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 1. Sadece Falco pod'larindan gelen 8080 portundaki webhook trafigine izin ver
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: falco
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # 1. CoreDNS sorgulari (kube-system namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. Kubernetes API Server Egress (In-Cluster Pod Patch islemi icin 443/6443)
+    # Zero-Trust: Internete (0.0.0.0/0) cikis kesinlikle YASAKTIR!
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443

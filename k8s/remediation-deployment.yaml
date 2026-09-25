@@ -24,7 +24,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: remediation
-          image: falco-remediation:v1.0.0
+          # Immutable SHA256 digest pinning (supply chain tampering protection)
+          image: ghcr.io/egekarabey35/falco-remediation@sha256:9f83a8b92b67d589d9e602264627bbf268153a5c2d3a393ff76c66cf17066d78
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -74,7 +75,6 @@ spec:
       targetPort: http
       name: http
 ---
-# Webhook Auth Token Secret (Kubernetes Secret)
 apiVersion: v1
 kind: Secret
 metadata:

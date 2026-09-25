@@ -41,9 +41,9 @@ type RemediationEngine struct {
 }
 
 func NewRemediationEngine(token string) (*RemediationEngine, error) {
-	// FAIL-CLOSED: Token bos ise motor kesinlikle baslatilamaz!
+	// FAIL-CLOSED: Guvensiz yapilandirma durumunda worker kesinlikle baslatilamaz
 	if token == "" {
-		return nil, fmt.Errorf("FAIL-CLOSED: FALCO_WEBHOOK_SECRET bos olamaz, worker guvensiz baslatilamaz")
+		return nil, fmt.Errorf("FAIL-CLOSED: FALCO_WEBHOOK_SECRET env bos olamaz")
 	}
 
 	config, err := rest.InClusterConfig()
@@ -69,10 +69,10 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// 1. FAIL-CLOSED Webhook Auth: Header yoksa veya gecersizse aninda 401
+	// 1. FAIL-CLOSED Webhook Auth: Sabit zamanli karsilastirma (Timing Attack Safe)
 	receivedToken := r.Header.Get("X-Falco-Token")
 	if subtle.ConstantTimeCompare([]byte(re.authToken), []byte(receivedToken)) != 1 {
-		log.Printf("[SECURITY VIOLATION] Gecersiz webhook auth token ile istek reddedildi! Kaynak IP: %s", r.RemoteAddr)
+		log.Printf("[SECURITY VIOLATION] Gecersiz webhook auth token! Kaynak: %s", r.RemoteAddr)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -106,10 +106,16 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 	w.Write([]byte(`{"status":"received"}`))
 }
 
-// Semaphore ile K8s API'ye goroutine patlamasini engeller (Throttling)
+// Semaphore ile Throttling + Panic durumunda Semaphore Sizintisini (Leak) Onleyen Recovery
 func (re *RemediationEngine) quarantinePodWithThrottling(namespace, podName, triggerRule string) {
 	re.semaphore <- struct{}{}
-	defer func() { <-re.semaphore }()
+	defer func() {
+		// Panic olsa dahi semaphore serbest birakilir, worker asla kilitlenmez
+		if r := recover(); r != nil {
+			log.Printf("[PANIC RECOVERED] Karantina goroutine panic yakalandi: %v", r)
+		}
+		<-re.semaphore
+	}()
 
 	re.quarantinePod(namespace, podName, triggerRule)
 }
@@ -118,11 +124,11 @@ func (re *RemediationEngine) quarantinePod(namespace, podName, triggerRule strin
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Idempotency: Zaten karantinada mi?
+	// Idempotency Check: Pod zaten karantinada mi?
 	pod, err := re.k8sClient.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Printf("[INFO] Pod zaten sonlanmis, islem atlandi: %s/%s", namespace, podName)
+			log.Printf("[INFO] Pod zaten sonlanmis: %s/%s", namespace, podName)
 			return
 		}
 		re.escalateFailure(namespace, podName, triggerRule, fmt.Sprintf("Pod bilgisi alinamadi: %v", err))
@@ -130,11 +136,11 @@ func (re *RemediationEngine) quarantinePod(namespace, podName, triggerRule strin
 	}
 
 	if pod.Labels[quarantineLabelKey] == quarantineLabelValue {
-		log.Printf("[IDEMPOTENT] Pod zaten karantinada: %s/%s", namespace, podName)
+		log.Printf("[IDEMPOTENT] Pod zaten karantinada, islem atlandi: %s/%s", namespace, podName)
 		return
 	}
 
-	log.Printf("[QUARANTINE ACTION] Pod izole ediliyor: %s/%s (Kural: %s)", namespace, podName, triggerRule)
+	log.Printf("[QUARANTINE ACTION] Pod karantinaya aliniyor: %s/%s (Kural: %s)", namespace, podName, triggerRule)
 
 	patchData := []byte(fmt.Sprintf(`{"metadata":{"labels":{"%s":"%s"}}}`, quarantineLabelKey, quarantineLabelValue))
 
@@ -148,11 +154,10 @@ func (re *RemediationEngine) quarantinePod(namespace, podName, triggerRule strin
 
 	if err != nil {
 		if apierrors.IsConflict(err) {
-			log.Printf("[WARN] Patch conflict olustu, yeniden denenmedi (idempotent merge): %s/%s", namespace, podName)
+			log.Printf("[WARN] Patch conflict engellendi: %s/%s", namespace, podName)
 			return
 		}
-		// 2. ESSIZ BASARISIZLIK ESKALASYONU:
-		// Savunma hatti kirildiginda sessiz kalinamaz! SOC/SRE ekibine eskalasyon uretilir.
+		// Sessiz Basarisizlik Yok: Basarisizlik durumunda eskalasyon uretilir
 		re.escalateFailure(namespace, podName, triggerRule, fmt.Sprintf("K8s API Patch basarisiz: %v", err))
 		return
 	}
@@ -160,14 +165,24 @@ func (re *RemediationEngine) quarantinePod(namespace, podName, triggerRule strin
 	log.Printf("[SUCCESS] Pod basariyla izole edildi (Deny-All devrede): %s/%s", namespace, podName)
 }
 
-// Otonom mudahale basarisiz olursa manuel mudahale icin acil eskalasyon alarmi uretir
+// Eskalasyon Mekanizmasi:
+// Ayrıcalıklı bir worker'a genis internet Egress'i (Slack vb.) acmak Zero-Trust ihlalidir.
+// Bunun yerine structured JSON audit event olarak stderr'e yazilir; node logging agent'i (Vector/Fluentbit)
+// bunu SIEM ve PagerDuty'ye aninda tasir.
 func (re *RemediationEngine) escalateFailure(namespace, podName, rule, reason string) {
-	log.Printf("=====================================================================")
-	log.Printf("[CRITICAL ESCALATION] OTOMATIK KARANTINA BASARISIZ OLDU!")
-	log.Printf("HEDEF: %s/%s | TETIKLEYEN KURAL: %s", namespace, podName, rule)
-	log.Printf("NEDEN: %s", reason)
-	log.Printf("AKSIYON GEREKLI: Lutfen pod'u acilen manuel olarak izole edin veya sonlandirin!")
-	log.Printf("=====================================================================")
+	escalationPayload := map[string]interface{}{
+		"event_type": "CRITICAL_SECURITY_ESCALATION",
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"namespace":  namespace,
+		"pod_name":   podName,
+		"rule":       rule,
+		"reason":     reason,
+		"action":     "MANUAL_INCIDENT_INTERVENTION_REQUIRED",
+	}
+
+	data, _ := json.Marshal(escalationPayload)
+	// Stderr uzerinden unbuffered SIEM audit log
+	fmt.Fprintf(os.Stderr, "[ALERT_ESCALATION] %s\n", string(data))
 }
 
 func main() {
@@ -175,7 +190,6 @@ func main() {
 
 	authToken := os.Getenv("FALCO_WEBHOOK_SECRET")
 	if authToken == "" {
-		// FAIL-CLOSED: Guvensiz yapilandirma durumunda aninda fatal exit
 		log.Fatalf("[FATAL CONFIG] FALCO_WEBHOOK_SECRET env bulunamadi! Sistem fail-closed modunda kapaniyor.")
 	}
 
