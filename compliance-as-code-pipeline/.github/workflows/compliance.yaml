@@ -1,0 +1,68 @@
+name: Compliance as Code & Automated Audit Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  compliance-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create Reports Directory
+        run: mkdir -p reports
+
+      # 1. Secret Exfiltration Scan (PCI-DSS 3.4)
+      - name: Run Gitleaks Secret Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+
+      # 2. IaC & K8s Hardening Scan (PCI-DSS 2.2 / CIS)
+      - name: Run Checkov IaC Compliance Scan
+        uses: bridgecrewio/checkov-action@master
+        with:
+          config_file: policies/checkov/.checkov.yaml
+          directory: test-workloads
+          output_format: json
+          output_file_path: reports/results_json.json
+          soft_fail: true
+
+      # 3. Policy-as-Code Gate (OPA / Conftest)
+      - name: Run Conftest OPA Policy Verification
+        uses: open-policy-agent/conftest-action@master
+        with:
+          files: test-workloads/compliant-deployment.yaml
+          policy: policies/opa/pci_dss.rego
+
+      # 4. Container Image Vulnerability & SBOM (PCI-DSS 6.2)
+      - name: Run Trivy Image Vulnerability Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'cgr.dev/chainguard/static:latest'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+
+      # 5. Generate Audit Evidence Pack
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile Regulatory Evidence
+        run: python scripts/generate-audit-pack.py
+
+      # 6. Archive Evidence Artifact for Auditors
+      - name: Archive Audit Evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: regulatory-audit-evidence-pack
+          path: reports/AUDIT_EVIDENCE.md

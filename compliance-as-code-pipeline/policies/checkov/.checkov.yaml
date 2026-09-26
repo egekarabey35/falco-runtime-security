@@ -1,0 +1,13 @@
+framework:
+  - terraform
+  - kubernetes
+check:
+  - CKV_AWS_19   # S3 bucket SSE KMS encryption
+  - CKV_AWS_145  # S3 bucket KMS key ID check
+  - CKV_K8S_20   # Containers should not run with allowPrivilegeEscalation
+  - CKV_K8S_22   # Containers should run as non-root
+  - CKV_K8S_38   # ServiceAccount token automount disabled if unused
+soft-fail: false
+compact: true
+output: json
+output-file-path: reports

@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hardened-workload
+  namespace: fintech-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hardened
+  template:
+    metadata:
+      labels:
+        app: hardened
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: cgr.dev/chainguard/static:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
