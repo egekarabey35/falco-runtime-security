@@ -5,9 +5,11 @@ Shift-Left regulatory compliance pipeline designed to continuously enforce **PCI
 ## Cryptographic Attestation Verification
 Auditors (QSA) can cryptographically verify that the `AUDIT_EVIDENCE.md` was generated securely by this exact GitHub repository's CI/CD pipeline using Sigstore Keyless signing.
 
+Due to enterprise privacy constraints (`--tlog-upload=false`), the signature is embedded with an RFC3161 timestamp from DigiCert's Timestamp Authority (`http://timestamp.digicert.com`) to guarantee long-term verification despite ephemeral OIDC certificate expiration.
+
     cosign verify-blob \
-      --certificate-identity="[https://github.com/egekarabey35/compliance-as-code-pipeline/.github/workflows/compliance.yaml@refs/heads/main](https://github.com/egekarabey35/compliance-as-code-pipeline/.github/workflows/compliance.yaml@refs/heads/main)" \
-      --certificate-oidc-issuer="[https://token.actions.githubusercontent.com](https://token.actions.githubusercontent.com)" \
+      --certificate-identity="https://github.com/egekarabey35/compliance-as-code-pipeline/.github/workflows/compliance.yaml@refs/heads/main" \
+      --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
       --signature reports/AUDIT_EVIDENCE.md.sig \
       --certificate reports/AUDIT_EVIDENCE.md.crt \
       reports/AUDIT_EVIDENCE.md
