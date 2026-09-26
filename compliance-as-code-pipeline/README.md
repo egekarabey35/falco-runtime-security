@@ -1,15 +1,15 @@
 # Compliance-as-Code & Automated Audit Pipeline
 
-Shift-Left regulatory compliance pipeline designed to continuously enforce **PCI-DSS v4.0** and **SOC 2 Type II** controls. Automatically compiles audit evidence on every git event.
+Shift-Left regulatory compliance pipeline designed to continuously enforce **PCI-DSS v4.0** and **SOC 2 Type I** controls.
 
-## Verification Gates
-1. **Gitleaks:** Secret leakage and credential exfiltration prevention (PCI-DSS 3.4).
-2. **Checkov & OPA/Rego:** Infrastructure as Code (Terraform) and K8s configuration guardrails (PCI-DSS 2.2).
-3. **Trivy:** Base container vulnerability and SBOM attestations (PCI-DSS 6.2).
-4. **Audit Aggregator:** Generates an automated, tamper-evident audit evidence pack (`AUDIT_EVIDENCE.md`).
+## Cryptographic Attestation Verification
+Auditors (QSA) can cryptographically verify that the `AUDIT_EVIDENCE.md` was generated securely by this exact GitHub repository's CI/CD pipeline using Sigstore Keyless signing.
 
-## Local Verification
-```bash
-python3 scripts/generate-audit-pack.py
-cat reports/AUDIT_EVIDENCE.md
-```
+    cosign verify-blob \
+      --certificate-identity="[https://github.com/egekarabey35/compliance-as-code-pipeline/.github/workflows/compliance.yaml@refs/heads/main](https://github.com/egekarabey35/compliance-as-code-pipeline/.github/workflows/compliance.yaml@refs/heads/main)" \
+      --certificate-oidc-issuer="[https://token.actions.githubusercontent.com](https://token.actions.githubusercontent.com)" \
+      --signature reports/AUDIT_EVIDENCE.md.sig \
+      --certificate reports/AUDIT_EVIDENCE.md.crt \
+      reports/AUDIT_EVIDENCE.md
+
+*Note: This pipeline is designed for internal, private enterprise repositories where fork-based Pull Requests are disabled, ensuring OIDC token integrity.*

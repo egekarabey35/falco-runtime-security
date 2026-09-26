@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [ main ]
 
-# Least Privilege + OIDC: Cosign ile keyless imzalama icin id-token sarti
 permissions:
   contents: read
   security-events: write
@@ -24,7 +23,6 @@ jobs:
       - name: Create Reports Directory
         run: mkdir -p reports
 
-      # 1. Gitleaks
       - name: Run Gitleaks Secret Scan
         uses: gitleaks/gitleaks-action@b784a9e5954a6efcf5668b8ec80271701385474c
         env:
@@ -34,27 +32,25 @@ jobs:
           report-path: reports/gitleaks-report.json
         continue-on-error: true
 
-      # 2. Checkov
       - name: Run Checkov IaC Compliance Scan
         uses: bridgecrewio/checkov-action@v12.2858.0
         with:
           config_file: policies/checkov/.checkov.yaml
-          directory: test-workloads
+          directory: test-workloads # Sadece gercek workloadlar taranir
           output_format: json
           output_file_path: reports/results_json.json
           soft_fail: false
         continue-on-error: true
 
-      # 3. OPA Conftest
       - name: Setup Conftest
         run: |
           wget https://github.com/open-policy-agent/conftest/releases/download/v0.48.0/conftest_0.48.0_Linux_x86_64.tar.gz
           tar xzf conftest_0.48.0_Linux_x86_64.tar.gz
           sudo mv conftest /usr/local/bin
+          
       - name: Run OPA Rego Verification
         run: conftest test test-workloads/*.yaml -p policies/opa/pci_dss.rego -o json > reports/opa-report.json || true
 
-      # 4. Trivy (Hardcode imaj cikarildi, test YAML taranacak sekilde ayarlandi)
       - name: Run Trivy Image Vulnerability Scan
         uses: aquasecurity/trivy-action@0.17.0
         with:
@@ -66,7 +62,6 @@ jobs:
           severity: 'CRITICAL,HIGH'
         continue-on-error: true
 
-      # 5. Compile Evidence (if: always ile hatalarda bile rapor uretimi)
       - name: Setup Python
         if: always()
         uses: actions/setup-python@v5
@@ -77,20 +72,21 @@ jobs:
         if: always()
         run: python scripts/generate-audit-pack.py
 
-      # 6. OIDC + Cosign Keyless Signing (Provable Chain of Custody)
+      # Claude'un SHA uyarisi duzeltildi (v3.5.0 yerine digest)
       - name: Install Cosign
         if: always()
-        uses: sigstore/cosign-installer@v3.5.0
+        uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20
         
-      - name: Sign Evidence with Sigstore
+      # Claude'un Fintech veri sizintisi uyarisi duzeltildi (--tlog-upload=false eklendi)
+      - name: Sign Evidence with Sigstore (Keyless)
         if: always()
         run: |
           cosign sign-blob --yes \
+            --tlog-upload=false \
             --output-signature reports/AUDIT_EVIDENCE.md.sig \
             --output-certificate reports/AUDIT_EVIDENCE.md.crt \
             reports/AUDIT_EVIDENCE.md
 
-      # 7. Archive Artifacts
       - name: Archive Audit Evidence
         if: always()
         uses: actions/upload-artifact@v4
