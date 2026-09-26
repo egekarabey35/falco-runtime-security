@@ -2,15 +2,15 @@
 
 Shift-Left regulatory compliance pipeline designed to continuously enforce **PCI-DSS v4.0** and **SOC 2 Type I** controls.
 
+## Architectural Notes
+* **Collect-Then-Gate Pattern:** Step-level exit codes (like Checkov or Trivy) are intentionally soft-failed (`continue-on-error: true`). The absolute and sole authority to break the pipeline is the Evidence Aggregator script (`generate-audit-pack.py`). It parses all JSON outputs and triggers a `sys.exit(1)` if any control fails. This ensures a failure in step 1 does not prevent the collection of evidence for step 4.
+* **Infrastructure-as-Deployed:** The Terraform scanning step uses GitHub OIDC (`configure-aws-credentials`) to authenticate with AWS, initializes a remote S3 backend, and evaluates the dynamic `terraform plan` against the actual AWS state, rather than just linting static code.
+* **Evidence Survivability:** Artifact generation and Cosign signing steps use `if: always()`, guaranteeing that even when a PR is blocked (failed gate), the cryptographic evidence of the failure is preserved and signed for auditors.
+
 ## Cryptographic Attestation Verification
 Auditors (QSA) can cryptographically verify that the `AUDIT_EVIDENCE.md` was generated securely by this exact GitHub repository's CI/CD pipeline using Sigstore Keyless signing.
 
 Due to enterprise privacy constraints (`--tlog-upload=false`), the signature is embedded with an RFC3161 timestamp from DigiCert's Timestamp Authority (`http://timestamp.digicert.com`). 
-
-*⚠️ **Known Limitation (Portfolio/Demo Constraint):** Using a public free TSA endpoint in a high-volume CI pipeline risks rate-limiting and creates a Single Point of Failure (SPOF).*
-
-### Verifying the Artifact (QSA Instructions)
-To verify the timestamp offline, the auditor must provide the TSA's root certificate chain (`digicert-tsa-root.pem`):
 
     cosign verify-blob \
       --certificate-identity="https://github.com/egekarabey35/compliance-as-code-pipeline/.github/workflows/compliance.yaml@refs/heads/main" \
@@ -19,5 +19,3 @@ To verify the timestamp offline, the auditor must provide the TSA's root certifi
       --signature reports/AUDIT_EVIDENCE.md.sig \
       --certificate reports/AUDIT_EVIDENCE.md.crt \
       reports/AUDIT_EVIDENCE.md
-
-*⚠️ **Day 2 Operations Note:** The `digicert-tsa-root.pem` file must be manually downloaded from DigiCert's trusted root repository. Certificate rotation and tracking of DigiCert's PKI lifecycle is a manual administrative process not covered by this automation.*

@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
   security-events: write
-  id-token: write
+  id-token: write # GitHub OIDC (Cosign ve AWS Auth için zorunlu)
 
 jobs:
   compliance-audit:
@@ -59,16 +59,25 @@ jobs:
             exit 1
           fi
 
-      # GERÇEK TERRAFORM ADIMI: Yorum satırı kaldırıldı, canlı çalışan adım eklendi
+      # 1. YENI: AWS OIDC Kimlik Dogrulamasi (Gercek Altyapi Icin)
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/GitHubActionsComplianceRole
+          aws-region: us-east-1
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         
+      # 2. YENI: Dinamik Plan ve JQ Sanitizasyonu
       - name: Generate Dynamic Terraform Plan
         run: |
           cd infrastructure/prod
           terraform init
           terraform plan -out=tfplan
-          terraform show -json tfplan > tf-plan.json
+          terraform show -json tfplan > tf-plan-raw.json
+          # Hassas verileri sanitizasyon ile temizle (Data Privacy)
+          cat tf-plan-raw.json | jq 'del(.variables, .configuration.root_module.variables)' > tf-plan.json
 
       - name: Run OPA Rego Verification on Prod Infrastructure
         run: |
@@ -91,11 +100,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      # PYTHON SCRIPT'İ GATEKEEPER'DIR: FAILED varsa sys.exit(1) atarak pipeline'ı patlatır
+      # PYTHON SCRIPT GATEKEEPER
       - name: Compile Regulatory Evidence & Enforce Gate
         if: always()
         run: python scripts/generate-audit-pack.py
 
+      # KANIT IMZALAMA (if: always ile HATA ANINDA BILE IMZALAR)
       - name: Install Cosign
         if: always()
         uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20
@@ -110,6 +120,7 @@ jobs:
             --output-certificate reports/AUDIT_EVIDENCE.md.crt \
             reports/AUDIT_EVIDENCE.md
 
+      # ARŞİVLEME (if: always ile REDDEDİLEN PR'LARIN KANITI SAKLANIR)
       - name: Archive Audit Evidence
         if: always()
         uses: actions/upload-artifact@v4

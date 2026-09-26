@@ -5,13 +5,20 @@ terraform {
       version = "~> 5.0"
     }
   }
+  # GERÇEK ALTYAPI: AWS S3 State Backend
+  backend "s3" {
+    bucket         = "fintech-tf-state-prod"
+    key            = "compliance/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
 }
 
 provider "aws" {
   region = "us-east-1"
 }
 
-# Gerçek AWS S3 Bucket'ı ve PCI-DSS 3.4 (KMS) Uyumluluğu
 resource "aws_s3_bucket" "prod_data" {
   bucket = "my-fintech-prod-data"
 }
