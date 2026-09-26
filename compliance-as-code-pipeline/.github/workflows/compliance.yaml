@@ -48,15 +48,22 @@ jobs:
           tar xzf conftest_0.48.0_Linux_x86_64.tar.gz
           sudo mv conftest /usr/local/bin
 
-      # YENİ EKLENEN: META-TEST (Kötü niyetli dosyanın kilit sistemini çalıştırdığının ispatı)
+      # ÇİFT YÖNLÜ META-TEST (K8s YAML ve Terraform JSON ayrı ayrı test ediliyor)
       - name: Meta-Test (Verify Negative Fixtures Fail)
         run: |
+          # 1. K8s (PCI-DSS 2.2) YAML Testi
           if conftest test test-workloads/negative-fixtures/*.yaml -p policies/opa/pci_dss.rego > /dev/null 2>&1; then
-            echo "[FATAL] Negative test passed unexpectedly! Policy gate is broken."
+            echo "[FATAL] K8s Non-Root negative test passed unexpectedly! Policy gate is broken."
             exit 1
-          else
-            echo "[SUCCESS] Negative test correctly failed the policy gate."
           fi
+          
+          # 2. Terraform (PCI-DSS 3.4) JSON Testi
+          if conftest test test-workloads/negative-fixtures/*.json -p policies/opa/pci_dss.rego > /dev/null 2>&1; then
+            echo "[FATAL] Terraform KMS negative test passed unexpectedly! Policy gate is broken."
+            exit 1
+          fi
+          
+          echo "[SUCCESS] Both K8s and Terraform negative tests correctly failed the policy gate."
 
       - name: Run OPA Rego Verification
         run: conftest test test-workloads/*.yaml -p policies/opa/pci_dss.rego -o json > reports/opa-report.json || true
@@ -86,7 +93,6 @@ jobs:
         if: always()
         uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20
         
-      # YENİ EKLENEN: DIGICERT Zaman Damgası (Timestamp Authority)
       - name: Sign Evidence with Sigstore (Keyless + TSA)
         if: always()
         run: |
