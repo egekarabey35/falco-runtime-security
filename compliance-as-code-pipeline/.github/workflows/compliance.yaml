@@ -32,11 +32,12 @@ jobs:
           report-path: reports/gitleaks-report.json
         continue-on-error: true
 
+      # ASIL TARAMALAR: Artik test-workloads degil, gercek altyapi (infrastructure/prod) taraniyor!
       - name: Run Checkov IaC Compliance Scan
         uses: bridgecrewio/checkov-action@v12.2858.0
         with:
           config_file: policies/checkov/.checkov.yaml
-          directory: test-workloads
+          directory: infrastructure/prod
           output_format: json
           output_file_path: reports/results_json.json
           soft_fail: false
@@ -48,31 +49,30 @@ jobs:
           tar xzf conftest_0.48.0_Linux_x86_64.tar.gz
           sudo mv conftest /usr/local/bin
 
-      # ÇİFT YÖNLÜ META-TEST (K8s YAML ve Terraform JSON ayrı ayrı test ediliyor)
+      # META-TEST: Kasten bozuk dosyalari test-workloads/ icinde test eder
       - name: Meta-Test (Verify Negative Fixtures Fail)
         run: |
-          # 1. K8s (PCI-DSS 2.2) YAML Testi
           if conftest test test-workloads/negative-fixtures/*.yaml -p policies/opa/pci_dss.rego > /dev/null 2>&1; then
-            echo "[FATAL] K8s Non-Root negative test passed unexpectedly! Policy gate is broken."
+            echo "[FATAL] K8s negative test passed unexpectedly!"
             exit 1
           fi
-          
-          # 2. Terraform (PCI-DSS 3.4) JSON Testi
           if conftest test test-workloads/negative-fixtures/*.json -p policies/opa/pci_dss.rego > /dev/null 2>&1; then
-            echo "[FATAL] Terraform KMS negative test passed unexpectedly! Policy gate is broken."
+            echo "[FATAL] Terraform negative test passed unexpectedly!"
             exit 1
           fi
-          
-          echo "[SUCCESS] Both K8s and Terraform negative tests correctly failed the policy gate."
+          echo "[SUCCESS] Meta-Test: Security gate correctly identified violations."
 
-      - name: Run OPA Rego Verification
-        run: conftest test test-workloads/*.yaml -p policies/opa/pci_dss.rego -o json > reports/opa-report.json || true
+      # PROD TARAMASI: Asil denetim kanitini ureten dinamik adim
+      - name: Run OPA Rego Verification on Prod Infrastructure
+        run: |
+          # Note in real-world: terraform plan -out=tfplan && terraform show -json tfplan > infrastructure/prod/tf-plan.json
+          conftest test infrastructure/prod/*.yaml infrastructure/prod/*.json -p policies/opa/pci_dss.rego -o json > reports/opa-report.json || true
 
       - name: Run Trivy Image Vulnerability Scan
         uses: aquasecurity/trivy-action@0.17.0
         with:
           scan-type: 'config'
-          scan-ref: 'test-workloads'
+          scan-ref: 'infrastructure/prod'
           format: 'json'
           output: 'reports/trivy-report.json'
           exit-code: '1'

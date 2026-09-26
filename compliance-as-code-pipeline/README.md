@@ -7,9 +7,10 @@ Auditors (QSA) can cryptographically verify that the `AUDIT_EVIDENCE.md` was gen
 
 Due to enterprise privacy constraints (`--tlog-upload=false`), the signature is embedded with an RFC3161 timestamp from DigiCert's Timestamp Authority (`http://timestamp.digicert.com`). 
 
-*⚠️ **Known Limitation (Portfolio/Demo Constraint):** Using a public free TSA endpoint in a high-volume CI pipeline risks rate-limiting and creates a Single Point of Failure (SPOF). In a true production environment, this should be replaced with a commercial SLA-backed TSA or an internal corporate RFC3161 server.*
+*⚠️ **Known Limitation (Portfolio/Demo Constraint):** Using a public free TSA endpoint in a high-volume CI pipeline risks rate-limiting and creates a Single Point of Failure (SPOF).*
 
-To verify the timestamp offline, the auditor must provide the TSA's root certificate chain:
+### Verifying the Artifact (QSA Instructions)
+To verify the timestamp offline, the auditor must provide the TSA's root certificate chain (`digicert-tsa-root.pem`):
 
     cosign verify-blob \
       --certificate-identity="https://github.com/egekarabey35/compliance-as-code-pipeline/.github/workflows/compliance.yaml@refs/heads/main" \
@@ -19,4 +20,4 @@ To verify the timestamp offline, the auditor must provide the TSA's root certifi
       --certificate reports/AUDIT_EVIDENCE.md.crt \
       reports/AUDIT_EVIDENCE.md
 
-*Note: This pipeline is designed for internal, private enterprise repositories where fork-based Pull Requests are disabled, ensuring OIDC token integrity.*
+*⚠️ **Day 2 Operations Note:** The `digicert-tsa-root.pem` file must be manually downloaded from DigiCert's trusted root repository. Certificate rotation and tracking of DigiCert's PKI lifecycle is a manual administrative process not covered by this automation.*
