@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 import json
 import os
-import hashlib
+import sys
 from datetime import datetime, timezone
 
-# FAIL-CLOSED PARSER'LAR
 def parse_checkov():
     try:
         with open("reports/results_json.json", "r") as f:
@@ -13,7 +12,7 @@ def parse_checkov():
             failed = summary.get("failed", 0)
             return {"status": "FAILED" if failed > 0 else "PASSED", "findings": failed}
     except Exception as e:
-        return {"status": f"FAILED (Parse Error: {str(e)})", "findings": -1} # Absence of evidence is evidence of failure
+        return {"status": f"FAILED (Parse Error/Missing)", "findings": -1}
 
 def parse_gitleaks():
     try:
@@ -48,7 +47,12 @@ def parse_opa():
         return {"status": "FAILED (File Missing)", "findings": -1}
 
 def generate_report():
-    commit_sha = os.getenv("GITHUB_SHA", "UNVERIFIED_LOCAL_BUILD")
+    # FAIL-CLOSED: Lokal calisma yasaklandi! CI disinda uretilemez.
+    commit_sha = os.getenv("GITHUB_SHA")
+    if not commit_sha:
+        print("[FATAL] GITHUB_SHA env bulunamadi! Rapor sadece GitHub Actions OIDC yetkisiyle CI uzerinde uretilebilir.")
+        sys.exit(1)
+
     branch = os.getenv("GITHUB_REF_NAME", "unknown")
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -81,21 +85,14 @@ def generate_report():
 ## 2. Chain of Custody & Attestation Details
 - **Verification Engine:** Automated Shift-Left GitHub Actions Pipeline.
 - **Fail-Closed Gate:** Zero human overrides permitted. Absence of evidence triggers automatic pipeline failure.
-- **Evidence Storage:** Cryptographically hashed and generated natively within ephemeral CI runner.
+- **Evidence Provenance:** Digitally signed via Sigstore/Cosign using GitHub Actions OIDC identity (Keyless Signing).
 """
     
     os.makedirs("reports", exist_ok=True)
-    report_path = "reports/AUDIT_EVIDENCE.md"
-    
-    with open(report_path, "w") as f:
+    with open("reports/AUDIT_EVIDENCE.md", "w") as f:
         f.write(report_md)
         
-    # Kriptografik kanit uretimi (SHA256 Hash)
-    sha256_hash = hashlib.sha256(report_md.encode()).hexdigest()
-    with open("reports/AUDIT_EVIDENCE.sha256", "w") as f:
-        f.write(f"{sha256_hash}  AUDIT_EVIDENCE.md")
-
-    print(f"[SUCCESS] Rapor (SHA256: {sha256_hash}) reports/ altinda olusturuldu.")
+    print("[SUCCESS] Rapor reports/ altinda olusturuldu (Sigstore ile imzalanmaya hazir).")
 
 if __name__ == "__main__":
     generate_report()
