@@ -47,7 +47,6 @@ def parse_opa():
         return {"status": "FAILED (File Missing)", "findings": -1}
 
 def generate_report():
-    # FAIL-CLOSED: Lokal calisma yasaklandi! CI disinda uretilemez.
     commit_sha = os.getenv("GITHUB_SHA")
     if not commit_sha:
         print("[FATAL] GITHUB_SHA env bulunamadi! Rapor sadece GitHub Actions OIDC yetkisiyle CI uzerinde uretilebilir.")
@@ -93,6 +92,11 @@ def generate_report():
         f.write(report_md)
         
     print("[SUCCESS] Rapor reports/ altinda olusturuldu (Sigstore ile imzalanmaya hazir).")
+
+    # CLAUDE'UN UYARISI: Gerçek GateKeeper burada devreye giriyor!
+    if overall_status == "FAILED":
+        print("[FATAL] Audit Evidence compiled, but compliance gate FAILED! Blocking CI Pipeline.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     generate_report()

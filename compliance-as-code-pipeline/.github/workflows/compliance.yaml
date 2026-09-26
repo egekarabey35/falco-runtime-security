@@ -32,7 +32,6 @@ jobs:
           report-path: reports/gitleaks-report.json
         continue-on-error: true
 
-      # ASIL TARAMALAR: Artik test-workloads degil, gercek altyapi (infrastructure/prod) taraniyor!
       - name: Run Checkov IaC Compliance Scan
         uses: bridgecrewio/checkov-action@v12.2858.0
         with:
@@ -49,7 +48,6 @@ jobs:
           tar xzf conftest_0.48.0_Linux_x86_64.tar.gz
           sudo mv conftest /usr/local/bin
 
-      # META-TEST: Kasten bozuk dosyalari test-workloads/ icinde test eder
       - name: Meta-Test (Verify Negative Fixtures Fail)
         run: |
           if conftest test test-workloads/negative-fixtures/*.yaml -p policies/opa/pci_dss.rego > /dev/null 2>&1; then
@@ -60,12 +58,20 @@ jobs:
             echo "[FATAL] Terraform negative test passed unexpectedly!"
             exit 1
           fi
-          echo "[SUCCESS] Meta-Test: Security gate correctly identified violations."
 
-      # PROD TARAMASI: Asil denetim kanitini ureten dinamik adim
+      # GERÇEK TERRAFORM ADIMI: Yorum satırı kaldırıldı, canlı çalışan adım eklendi
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        
+      - name: Generate Dynamic Terraform Plan
+        run: |
+          cd infrastructure/prod
+          terraform init
+          terraform plan -out=tfplan
+          terraform show -json tfplan > tf-plan.json
+
       - name: Run OPA Rego Verification on Prod Infrastructure
         run: |
-          # Note in real-world: terraform plan -out=tfplan && terraform show -json tfplan > infrastructure/prod/tf-plan.json
           conftest test infrastructure/prod/*.yaml infrastructure/prod/*.json -p policies/opa/pci_dss.rego -o json > reports/opa-report.json || true
 
       - name: Run Trivy Image Vulnerability Scan
@@ -85,7 +91,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Compile Regulatory Evidence
+      # PYTHON SCRIPT'İ GATEKEEPER'DIR: FAILED varsa sys.exit(1) atarak pipeline'ı patlatır
+      - name: Compile Regulatory Evidence & Enforce Gate
         if: always()
         run: python scripts/generate-audit-pack.py
 
