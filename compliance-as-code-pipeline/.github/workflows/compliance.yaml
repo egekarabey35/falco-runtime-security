@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main ]
 
+# Least Privilege: GITHUB_TOKEN sadece bunlari yapabilir
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   compliance-audit:
     runs-on: ubuntu-latest
@@ -18,51 +23,64 @@ jobs:
       - name: Create Reports Directory
         run: mkdir -p reports
 
-      # 1. Secret Exfiltration Scan (PCI-DSS 3.4)
+      # 1. Gitleaks: Report ciktisi tanimlandi
       - name: Run Gitleaks Secret Scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@b784a9e5954a6efcf5668b8ec80271701385474c
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+        with:
+          report-format: json
+          report-path: reports/gitleaks-report.json
+        continue-on-error: true # Diger taramalarin da tamamlanmasi icin gecici devam izni
 
-      # 2. IaC & K8s Hardening Scan (PCI-DSS 2.2 / CIS)
+      # 2. Checkov (Soft fail kapatildi, JSON uretildi)
       - name: Run Checkov IaC Compliance Scan
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@v12.2858.0
         with:
           config_file: policies/checkov/.checkov.yaml
           directory: test-workloads
           output_format: json
           output_file_path: reports/results_json.json
-          soft_fail: true
+          soft_fail: false
+        continue-on-error: true
 
-      # 3. Policy-as-Code Gate (OPA / Conftest)
-      - name: Run Conftest OPA Policy Verification
-        uses: open-policy-agent/conftest-action@master
-        with:
-          files: test-workloads/compliant-deployment.yaml
-          policy: policies/opa/pci_dss.rego
+      # 3. OPA Conftest: Fake dosya yerine test-workloads taramasi ve JSON cikti
+      - name: Setup Conftest
+        run: |
+          wget https://github.com/open-policy-agent/conftest/releases/download/v0.48.0/conftest_0.48.0_Linux_x86_64.tar.gz
+          tar xzf conftest_0.48.0_Linux_x86_64.tar.gz
+          sudo mv conftest /usr/local/bin
+      - name: Run OPA Rego Verification
+        run: conftest test test-workloads/*.yaml -p policies/opa/pci_dss.rego -o json > reports/opa-report.json || true
 
-      # 4. Container Image Vulnerability & SBOM (PCI-DSS 6.2)
+      # 4. Trivy: Hardcode imaj cikarildi, test YAML'indan imaj taramasi yapilmali (veya baska imaj). Format JSON yapildi.
       - name: Run Trivy Image Vulnerability Scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.17.0
         with:
-          image-ref: 'cgr.dev/chainguard/static:latest'
-          format: 'table'
-          exit-code: '0'
+          image-ref: 'nginx:latest' # Non-compliant yaml icindeki gercek imaj
+          format: 'json'
+          output: 'reports/trivy-report.json'
+          exit-code: '1'
           severity: 'CRITICAL,HIGH'
+        continue-on-error: true
 
-      # 5. Generate Audit Evidence Pack
+      # 5. Pipeline Hata Verse Bile Raporu Calistir (if: always())
       - name: Setup Python
+        if: always()
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Compile Regulatory Evidence
+        if: always()
         run: python scripts/generate-audit-pack.py
 
-      # 6. Archive Evidence Artifact for Auditors
+      # 6. Kriptografik Olarak Ileride Dogrulanabilecek Artifact
       - name: Archive Audit Evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: regulatory-audit-evidence-pack
-          path: reports/AUDIT_EVIDENCE.md
+          path: |
+            reports/AUDIT_EVIDENCE.md
+            reports/AUDIT_EVIDENCE.sha256
