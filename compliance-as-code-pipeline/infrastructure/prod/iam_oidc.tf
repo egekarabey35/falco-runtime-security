@@ -1,4 +1,3 @@
-# 1. Trust Policy: Sadece bu repo ve sadece 'main' branch bu rolü alabilir.
 data "aws_iam_policy_document" "github_actions_assume_role" {
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -12,11 +11,13 @@ data "aws_iam_policy_document" "github_actions_assume_role" {
       values   = ["sts.amazonaws.com"]
     }
     condition {
-      # CRITICAL: Spoofing ve yetki asimi onlemi. 
-      # Baska repo veya branch bu rolu kullanamaz!
+      # CRITICAL FIX: Hem push(main) hem de pull_request tetikleyicileri icin OIDC izni
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:egekarabey35/compliance-as-code-pipeline:ref:refs/heads/main"]
+      values   = [
+        "repo:egekarabey35/compliance-as-code-pipeline:ref:refs/heads/main",
+        "repo:egekarabey35/compliance-as-code-pipeline:pull_request"
+      ]
     }
   }
 }
@@ -26,24 +27,12 @@ resource "aws_iam_role" "github_actions_compliance_role" {
   assume_role_policy = data.aws_iam_policy_document.github_actions_assume_role.json
 }
 
-# 2. Permission Scope (Least Privilege): Sadece Plan yetkisi
 data "aws_iam_policy_document" "compliance_read_only" {
-  # AWS uzerindeki kaynaklari sadece okuyabilir (Apply/Write YASAK)
-  statement {
-    actions   = ["s3:Get*", "s3:List*", "ec2:Describe*"]
-    resources = ["*"]
-  }
-  
-  # Terraform State okuma yetkisi
+  # YALNIZCA Terraform State ve Lock izinleri. Gereksiz S3/EC2 wildcard'lari silindi.
   statement {
     actions   = ["s3:GetObject", "s3:ListBucket"]
-    resources = [
-      "arn:aws:s3:::fintech-tf-state-prod", 
-      "arn:aws:s3:::fintech-tf-state-prod/*"
-    ]
+    resources = ["arn:aws:s3:::fintech-tf-state-prod", "arn:aws:s3:::fintech-tf-state-prod/*"]
   }
-  
-  # Terraform Lock yetkisi (Plan calisirken lock atmak icin DynamoDB Put/Delete sarttir)
   statement {
     actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
     resources = ["arn:aws:dynamodb:us-east-1:123456789012:table/terraform-locks"]

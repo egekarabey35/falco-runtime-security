@@ -11,8 +11,8 @@ def parse_checkov():
             summary = data[0].get("summary", {}) if isinstance(data, list) and data else data.get("summary", {})
             failed = summary.get("failed", 0)
             return {"status": "FAILED" if failed > 0 else "PASSED", "findings": failed}
-    except Exception as e:
-        return {"status": f"FAILED (Parse Error/Missing)", "findings": -1}
+    except Exception:
+        return {"status": "FAILED (Parse Error/Missing)", "findings": -1}
 
 def parse_gitleaks():
     try:
@@ -49,10 +49,9 @@ def parse_opa():
 def generate_report():
     commit_sha = os.getenv("GITHUB_SHA")
     if not commit_sha:
-        print("[FATAL] GITHUB_SHA env bulunamadi! Rapor sadece GitHub Actions OIDC yetkisiyle CI uzerinde uretilebilir.")
+        print("[FATAL] GITHUB_SHA env bulunamadi! Rapor sadece GitHub Actions uzerinde uretilebilir.")
         sys.exit(1)
 
-    branch = os.getenv("GITHUB_REF_NAME", "unknown")
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     c = parse_checkov()
@@ -63,7 +62,7 @@ def generate_report():
     overall_status = "PASSED" if all(x["status"] == "PASSED" for x in [c, g, t, o]) else "FAILED"
 
     report_md = f"""# Regulatory Compliance & Audit Evidence Pack
-**Target Frameworks:** PCI-DSS v4.0 | SOC 2 Type I (Point-in-Time Attestation)
+**Target Frameworks:** PCI-DSS v4.0 | SOC 2 Type I
 **Attestation Date:** {timestamp}
 **Build Commit SHA:** `{commit_sha}`
 **Overall Gate Status:** **{overall_status}**
@@ -93,7 +92,6 @@ def generate_report():
         
     print("[SUCCESS] Rapor reports/ altinda olusturuldu (Sigstore ile imzalanmaya hazir).")
 
-    # CLAUDE'UN UYARISI: Gerçek GateKeeper burada devreye giriyor!
     if overall_status == "FAILED":
         print("[FATAL] Audit Evidence compiled, but compliance gate FAILED! Blocking CI Pipeline.")
         sys.exit(1)
