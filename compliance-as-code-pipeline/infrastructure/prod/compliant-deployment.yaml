@@ -21,7 +21,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: app
-          image: cgr.dev/chainguard/static:latest
+          # CRITICAL FIX: Immutable SHA256 yerine ":latest" kullanımı yasaktır.
+          image: cgr.dev/chainguard/static@sha256:d8a29a4128f729fcc01a35a6039543940be66d863f6e8d24b61ff6cc7c132890
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

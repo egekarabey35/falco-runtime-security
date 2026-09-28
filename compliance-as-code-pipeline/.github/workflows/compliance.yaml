@@ -88,7 +88,7 @@ jobs:
       - name: Run Trivy Image Vulnerability Scan
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # 0.17.0
         with:
-          image-ref: 'nginx@sha256:0a399eb16751829e1af26fea27b20c3ec28d7ab1fb72182879dcae1cca21206a'
+          image-ref: 'cgr.dev/chainguard/static@sha256:d8a29a4128f729fcc01a35a6039543940be66d863f6e8d24b61ff6cc7c132890'
           format: 'json'
           output: 'reports/trivy-report.json'
           exit-code: '1'
