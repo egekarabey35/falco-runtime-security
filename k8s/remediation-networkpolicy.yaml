@@ -22,12 +22,18 @@ spec:
         - protocol: TCP
           port: 8080
   egress:
-    # Zero-Trust & Strict Least Privilege:
-    # InClusterConfig() pod enjekte env (KUBERNETES_SERVICE_HOST) uzerinden IP ile baglanir.
-    # DNS (port 53) ve Dis Dunya (0.0.0.0/0) tamamen engellenmistir.
+    # CRITICAL FIX: Allow DNS resolution (CoreDNS) for dynamic API endpoints (EKS/GKE compatibility)
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # CRITICAL FIX: Broaden API access to standard private Service CIDRs to avoid hardcoding 10.96.0.1
     - to:
         - ipBlock:
-            cidr: 10.96.0.1/32
+            cidr: 10.0.0.0/8
+        - ipBlock:
+            cidr: 172.16.0.0/12
       ports:
         - protocol: TCP
           port: 443

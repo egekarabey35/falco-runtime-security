@@ -34,6 +34,8 @@ spec:
             - name: FALCO_WEBHOOK_SECRET
               valueFrom:
                 secretKeyRef:
+                  # CRITICAL FIX: This secret is NO LONGER stored in Git.
+                  # It must be provisioned externally via HashiCorp Vault or External Secrets Operator.
                   name: falco-webhook-secret
                   key: token
           livenessProbe:
@@ -74,12 +76,3 @@ spec:
     - port: 8080
       targetPort: http
       name: http
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: falco-webhook-secret
-  namespace: security-monitoring
-type: Opaque
-stringData:
-  token: "c2VjdXJlX2ZhbGNvX3J1bnRpbWVfdG9rZW5fMjAyNg=="
