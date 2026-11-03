@@ -1,0 +1,29 @@
+name: Falco remediation Go checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  remediation:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: remediation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: remediation/go.mod
+          cache-dependency-path: remediation/go.sum
+      - name: Build and test remediation worker
+        run: go test ./...
+      - name: Static vet
+        run: go vet ./...
