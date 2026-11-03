@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -75,8 +76,14 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // Limit untrusted Falco webhook payloads to 1 MiB.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "Payload Too Large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "Cannot read payload", http.StatusBadRequest)
 		return
 	}
@@ -196,8 +203,10 @@ func main() {
 	server := &http.Server{
 		Addr:         ":8080",
 		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      5 * time.Second,
+		IdleTimeout:       30 * time.Second,
 	}
 
 	stop := make(chan os.Signal, 1)
