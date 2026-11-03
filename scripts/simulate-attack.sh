@@ -17,7 +17,7 @@ echo "[1] Test: Pod icinde yetkisiz interaktif shell spawn..."
 kubectl exec -n $NAMESPACE $POD_NAME -- sh -c "echo '[ATTACK] Shell spawned inside container'" || true
 
 echo "[2] Test: /vault/secrets/webhook-secret dosyasina cat ile erisim..."
-kubectl exec -n $NAMESPACE $POD_NAME -- cat /vault/secrets/webhook-secret || true
+# Open the secret path for the simulation without printing sensitive contents.\nkubectl exec -n "$NAMESPACE" "$POD_NAME" -- cat /vault/secrets/webhook-secret > /dev/null || true
 
 echo "----------------------------------------------------------"
 echo "[DOGRULAMA] Karantina label'i (security.quarantine=true) kontrol ediliyor..."
