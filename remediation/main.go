@@ -102,7 +102,15 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 		namespace, _ := event.OutputFields["k8s.ns.name"].(string)
 
 		if namespace == targetNamespace && podName != "" {
-			go re.quarantinePodWithThrottling(namespace, podName, event.Rule)
+			// Acquire capacity *before* starting a goroutine. This bounds work
+			// and avoids an unbounded pile of blocked goroutines under a flood.
+			select {
+			case re.semaphore <- struct{}{}:
+				go re.quarantinePodWithThrottling(namespace, podName, event.Rule)
+			default:
+				http.Error(w, "Remediation Capacity Exceeded", http.StatusServiceUnavailable)
+				return
+			}
 		}
 	}
 
@@ -111,7 +119,6 @@ func (re *RemediationEngine) handleFalcoEvent(w http.ResponseWriter, r *http.Req
 }
 
 func (re *RemediationEngine) quarantinePodWithThrottling(namespace, podName, triggerRule string) {
-	re.semaphore <- struct{}{}
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[PANIC RECOVERED] Karantina goroutine panic yakalandi: %v", r)
