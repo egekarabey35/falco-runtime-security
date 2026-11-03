@@ -1,39 +1,42 @@
-# Cloud-Native Runtime Security & Automated Remediation Engine
+# Falco Runtime Security and Automated Isolation Lab
 
-An eBPF-driven runtime security and active defense architecture designed for high-risk fintech environments. Tailored to protect and isolate compromised workloads running the TRC-20 Vault Webhook Gateway.
+[![Go remediation checks](https://github.com/egekarabey35/falco-runtime-security/actions/workflows/go-ci.yml/badge.svg)](https://github.com/egekarabey35/falco-runtime-security/actions/workflows/go-ci.yml)
 
----
+A **Kubernetes runtime-security reference project** combining Falco eBPF/sycall detection rules with a Go webhook receiver that can label matching pods for isolation by NetworkPolicy.
 
-## Architecture Overview
+## Architecture in this repository
 
-1. Detection: Falco monitors Linux kernel syscalls via eBPF driver.
-2. Trigger: CRITICAL priority events are forwarded via HTTP webhook.
-3. Remediation: Go worker patches target pod with security.quarantine=true.
-4. Isolation: Deny-All NetworkPolicy matches quarantine label and cuts all traffic.
-5. Forensics: Container remains alive without network access for incident response.
+1. Falco rule definitions under [`falco/rules/`](falco/rules/) describe suspicious process execution, secret-file access and abnormal connections.
+2. A webhook listener in [`remediation/main.go`](remediation/main.go) authenticates an `X-Falco-Token` header, reads bounded JSON and processes critical events.
+3. If a critical event concerns a pod in the configured `fintech-gateway` namespace, the worker attempts to patch `security.quarantine=true`.
+4. [`k8s/quarantine-networkpolicy.yaml`](k8s/quarantine-networkpolicy.yaml) contains a matching deny policy. Actual packet isolation **depends on a NetworkPolicy-enforcing CNI and correct policy deployment**.
+5. Authentication failures and parsing errors are rejected before any quarantine action.
 
-### Detection Rules
-- Unauthorized Shell Spawn in TRC20 Gateway (sh, bash, ash)
-- Unauthorized Read of Injected Vault Secret (/vault/secrets/webhook-secret)
-- Outbound Network Connection to Non-Whitelisted Endpoint
+## Verification status
 
----
+The [Go CI workflow](.github/workflows/go-ci.yml) runs build/tests and `go vet`, including tests for rejected unauthorized requests, oversized webhook bodies and accepted noncritical events. This does not prove end-to-end cluster isolation or real-world alert precision.
 
-## Alert Noise Tuning
+The previously reported alert-frequency and latency figures were **not reproduced in the current automated tests** and are intentionally omitted. Production-like metrics require a documented test environment, workload, baseline and raw measurements.
 
-| Metric | Default Falco | Hardened Ruleset | Delta |
-|---|---|---|---|
-| Alert Frequency | ~142 alerts/hr | < 2 alerts/hr | -98.5% |
-| False-Positive Noise | High | Near Zero | Scannable |
-| Actionable Precision | Low | High | High Fidelity |
+## Development and controlled simulation
 
----
-
-## Attack Simulation
-
-Execute the automated simulation script:
+```bash
+cd remediation
+go test ./...
+go vet ./...
+cd ..
+# Only after deploying this demo to a lab cluster:
 ./scripts/simulate-attack.sh
+```
 
-### Operational Portability Note
-> **ClusterIP Customization:** The API Server CIDR `10.96.0.1/32` in `remediation-networkpolicy.yaml` reflects standard local/kind environments. In managed environments (EKS/GKE), extract the exact ClusterIP via:
-> `kubectl get svc kubernetes -n default -o jsonpath="{.spec.clusterIP}"` and patch the CIDR accordingly.
+The simulation script attempts controlled accesses against a test pod and now **discards secret file content instead of printing it**. The demo TRC-20 image may be distroless, with no `sh` or `cat`, so these commands may fail without generating the intended Falco event. Use a disposable lab environment and verify results from Falco and Kubernetes logs.
+
+## Remaining requirements
+
+- Configure a genuine authenticated Falco webhook path and verify TLS/network segmentation.
+- Install a CNI that enforces the deny policy.
+- Review the currently broad remediation API egress exception in [`k8s/remediation-networkpolicy.yaml`](k8s/remediation-networkpolicy.yaml) and constrain it to the cluster's actual control-plane endpoints.
+- Test quarantine actions using Kubernetes fake-client or integration tests; compilation alone does not establish that pods are actually isolated.
+- Avoid marketing this as independently audited or production-ready software.
+
+Related repositories: [TRC-20 webhook gateway](https://github.com/egekarabey35/trc20-vault-webhook-gateway) and [Compliance-as-Code](https://github.com/egekarabey35/compliance-as-code-pipeline).
