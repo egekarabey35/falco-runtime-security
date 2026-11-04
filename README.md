@@ -31,6 +31,10 @@ cd ..
 
 The simulation script attempts controlled accesses against a test pod and now **discards secret file content instead of printing it**. The demo TRC-20 image may be distroless, with no `sh` or `cat`, so these commands may fail without generating the intended Falco event. Use a disposable lab environment and verify results from Falco and Kubernetes logs.
 
+## Interaction with the target workload's NetworkPolicies
+
+Kubernetes NetworkPolicy permissions are additive. Applying an empty deny-all policy alone does **not** revoke an overlapping allow policy. The companion [TRC-20 gateway network policy](https://github.com/egekarabey35/trc20-vault-webhook-gateway/blob/main/k8s/base/networkpolicy.yaml) now explicitly excludes `security.quarantine=true` pods, and the gateway repo includes the matching [quarantine deny-all](https://github.com/egekarabey35/trc20-vault-webhook-gateway/blob/main/k8s/base/quarantine-networkpolicy.yaml). Both must be deployed together with a policy-enforcing CNI; verify other namespace-wide allow rules do not select quarantined pods.
+
 ## Remaining requirements
 
 - Configure a genuine authenticated Falco webhook path and verify TLS/network segmentation.
